@@ -241,7 +241,10 @@ def chat():
     """
     try:
         import os
-        log.info("[Argus] Chat called — API key present: %s", bool(os.environ.get("ANTHROPIC_API_KEY")))
+        all_env_keys = [k for k in os.environ.keys() if "ANTHRO" in k.upper() or "API" in k.upper()]
+        log.info("[Argus] Environment API keys found: %s", all_env_keys)
+        log.info("[Argus] ANTHROPIC_API_KEY value present: %s", bool(os.environ.get("ANTHROPIC_API_KEY")))
+        log.info("[Argus] config.ANTHROPIC_API_KEY present: %s", bool(config.ANTHROPIC_API_KEY))
 
         if not validate_secret():
             return jsonify({"error": "Unauthorized"}), 401
