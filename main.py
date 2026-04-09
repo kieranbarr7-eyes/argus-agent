@@ -225,7 +225,11 @@ def chat():
         messages = data.get("messages", [])
         watch_context = data.get("watchContext", "")
 
-        client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+        import os
+        api_key = os.environ.get("ANTHROPIC_API_KEY") or config.ANTHROPIC_API_KEY
+        if not api_key:
+            return jsonify({"error": "API key not configured"}), 500
+        client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=300,
