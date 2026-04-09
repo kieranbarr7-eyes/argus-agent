@@ -11,6 +11,7 @@ import logging
 import random
 import re
 import signal
+import subprocess
 import sys
 import time
 import traceback
@@ -37,6 +38,27 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("argus-agent")
+
+
+# ---------------------------------------------------------------------------
+# Install Playwright browsers at startup
+# ---------------------------------------------------------------------------
+
+def install_playwright_browsers():
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode == 0:
+            log.info("[Argus] Playwright chromium installed successfully")
+        else:
+            log.error("[Argus] Playwright install failed: %s", result.stderr)
+    except Exception as e:
+        log.error("[Argus] Playwright install error: %s", e)
+
+install_playwright_browsers()
+
 
 # ---------------------------------------------------------------------------
 # Flask app + CORS + rate limiting
