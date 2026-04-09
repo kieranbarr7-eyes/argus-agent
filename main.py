@@ -254,9 +254,9 @@ def chat():
         messages = data.get("messages", [])
         watch_context = data.get("watchContext", "")
 
-        api_key = os.environ.get("ANTHROPIC_API_KEY") or config.ANTHROPIC_API_KEY
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
-            log.error("[Argus] ANTHROPIC_API_KEY not set")
+            log.error("[Argus] ANTHROPIC_API_KEY not found in environment")
             return jsonify({"error": "API key not configured"}), 500
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
