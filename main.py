@@ -13,6 +13,7 @@ import re
 import signal
 import sys
 import time
+import traceback
 
 import anthropic
 from flask import Flask, request, jsonify
@@ -205,7 +206,7 @@ def vapid_public_key():
 # ---------------------------------------------------------------------------
 
 @app.route("/chat", methods=["POST"])
-@limiter.limit("5 per 15 minutes", key_func=lambda: request.headers.get("X-Argus-Secret", request.remote_addr))
+@limiter.limit("30 per minute")
 def chat():
     """
     Proxy Claude API calls so the Anthropic key stays on the server.
@@ -216,53 +217,25 @@ def chat():
         "watchContext": "optional context string"
     }
     """
-    if not validate_secret():
-        return jsonify({"error": "Unauthorized"}), 401
-
-    if not config.ANTHROPIC_API_KEY:
-        return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 500
-
-    data = request.get_json(silent=True)
-    if not data:
-        return jsonify({"error": "Invalid or missing JSON body"}), 400
-
-    ok, err = validate_chat_payload(data)
-    if not ok:
-        return jsonify({"error": err}), 400
-
-    messages = data["messages"]
-    watch_context = data.get("watchContext", "")
-
-    # Truncate watch context to safe length
-    watch_context = watch_context[:_MAX_CONTEXT_LEN]
-
-    system_prompt = (
-        "You are Argus, a friendly AI assistant that helps users monitor "
-        "Amtrak ticket prices. "
-        f"{watch_context} "
-        "Do not ask users to re-enter information you already have. "
-        "Ask one question at a time. Be conversational and brief — no more "
-        "than 2-3 sentences per message."
-    )
-
     try:
+        if not validate_secret():
+            return jsonify({"error": "Unauthorized"}), 401
+
+        data = request.json
+        messages = data.get("messages", [])
+        watch_context = data.get("watchContext", "")
+
         client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=300,
-            system=system_prompt,
+            system=f"You are Argus, a friendly AI assistant that helps users monitor Amtrak ticket prices. {watch_context}",
             messages=messages,
         )
         return jsonify({"content": response.content[0].text})
-    except anthropic.AuthenticationError:
-        log.error("Anthropic API authentication failed")
-        return jsonify({"error": "Claude API authentication failed"}), 500
-    except anthropic.RateLimitError:
-        log.warning("Anthropic API rate limited")
-        return jsonify({"error": "Rate limited — please try again shortly"}), 429
     except Exception as e:
-        log.error("Chat endpoint error: %s", e)
-        return jsonify({"error": "Chat failed"}), 500
+        log.error("[Argus] Chat endpoint error: %s", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/subscribe", methods=["POST"])
