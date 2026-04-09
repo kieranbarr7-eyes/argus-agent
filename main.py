@@ -218,6 +218,9 @@ def chat():
     }
     """
     try:
+        import os
+        log.info("[Argus] Chat called — API key present: %s", bool(os.environ.get("ANTHROPIC_API_KEY")))
+
         if not validate_secret():
             return jsonify({"error": "Unauthorized"}), 401
 
@@ -225,9 +228,9 @@ def chat():
         messages = data.get("messages", [])
         watch_context = data.get("watchContext", "")
 
-        import os
         api_key = os.environ.get("ANTHROPIC_API_KEY") or config.ANTHROPIC_API_KEY
         if not api_key:
+            log.error("[Argus] ANTHROPIC_API_KEY not set")
             return jsonify({"error": "API key not configured"}), 500
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
