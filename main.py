@@ -2,13 +2,14 @@
 main.py — Entry point for the Argus agent.
 
 Starts the Flask server with web push endpoints, Claude chat proxy,
-rate limiting, CORS, API secret validation, and the APScheduler
-background poller for all active watches.
+rate limiting, CORS, API secret validation, input sanitization,
+and the APScheduler background poller for all active watches.
 """
 
 import json
 import logging
 import random
+import re
 import signal
 import sys
 import time
@@ -41,6 +42,7 @@ log = logging.getLogger("argus-agent")
 # ---------------------------------------------------------------------------
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 64 * 1024  # 64 KB max request body
 
 CORS(app, origins=[
     "http://localhost:5173",
@@ -53,6 +55,7 @@ limiter = Limiter(
     app=app,
     key_func=get_remote_address,
     default_limits=["200 per hour", "50 per minute"],
+    storage_uri="memory://",
 )
 
 
@@ -64,8 +67,116 @@ def validate_secret():
     """Check X-Argus-Secret header. Skip if ARGUS_API_SECRET is not set."""
     if not config.ARGUS_API_SECRET:
         return True  # Skip validation if not configured
-    secret = request.headers.get("X-Argus-Secret")
-    return secret == config.ARGUS_API_SECRET
+    secret = request.headers.get("X-Argus-Secret", "")
+    if not secret:
+        return False
+    # Constant-time comparison to prevent timing attacks
+    import hmac
+    return hmac.compare_digest(secret, config.ARGUS_API_SECRET)
+
+
+# ---------------------------------------------------------------------------
+# Input validation helpers
+# ---------------------------------------------------------------------------
+
+# Amtrak station codes: 3 uppercase letters
+_STATION_CODE_RE = re.compile(r"^[A-Z]{3}$")
+
+# Date formats we accept: YYYY-MM-DD or MM/DD/YYYY
+_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4})$")
+
+# Train numbers: 1-4 digits
+_TRAIN_NUM_RE = re.compile(r"^\d{1,4}$")
+
+# Max lengths for string fields
+_MAX_STATION_LEN = 3
+_MAX_DATE_LEN = 10
+_MAX_TRAIN_NUM_LEN = 4
+_MAX_ENDPOINT_LEN = 2048
+_MAX_CONTEXT_LEN = 5000
+_MAX_MESSAGE_CONTENT_LEN = 2000
+_MAX_MESSAGES_COUNT = 50
+
+
+def sanitize_station(code: str) -> str | None:
+    """Validate and sanitize a station code. Returns None if invalid."""
+    if not isinstance(code, str):
+        return None
+    code = code.strip().upper()[:_MAX_STATION_LEN]
+    return code if _STATION_CODE_RE.match(code) else None
+
+
+def sanitize_date(date_str: str) -> str | None:
+    """Validate and sanitize a date string. Returns None if invalid."""
+    if not isinstance(date_str, str):
+        return None
+    date_str = date_str.strip()[:_MAX_DATE_LEN]
+    return date_str if _DATE_RE.match(date_str) else None
+
+
+def sanitize_train_number(num: str) -> str | None:
+    """Validate and sanitize a train number. Returns None if invalid."""
+    if not isinstance(num, str):
+        return None
+    num = num.strip()[:_MAX_TRAIN_NUM_LEN]
+    return num if _TRAIN_NUM_RE.match(num) else None
+
+
+def validate_chat_payload(data: dict) -> tuple[bool, str]:
+    """Validate /chat request payload. Returns (ok, error_message)."""
+    if not isinstance(data, dict):
+        return False, "Invalid request format"
+
+    messages = data.get("messages")
+    if not isinstance(messages, list) or len(messages) == 0:
+        return False, "Missing or empty 'messages' array"
+    if len(messages) > _MAX_MESSAGES_COUNT:
+        return False, f"Too many messages (max {_MAX_MESSAGES_COUNT})"
+
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            return False, f"Message {i} is not an object"
+        role = msg.get("role", "")
+        if role not in ("user", "assistant"):
+            return False, f"Message {i} has invalid role '{role}'"
+        content = msg.get("content", "")
+        if not isinstance(content, str):
+            return False, f"Message {i} content must be a string"
+        if len(content) > _MAX_MESSAGE_CONTENT_LEN:
+            return False, f"Message {i} content too long (max {_MAX_MESSAGE_CONTENT_LEN} chars)"
+
+    watch_context = data.get("watchContext", "")
+    if not isinstance(watch_context, str):
+        return False, "watchContext must be a string"
+    if len(watch_context) > _MAX_CONTEXT_LEN:
+        return False, f"watchContext too long (max {_MAX_CONTEXT_LEN} chars)"
+
+    return True, ""
+
+
+def validate_subscription_payload(subscription: dict) -> tuple[bool, str]:
+    """Validate a push subscription object. Returns (ok, error_message)."""
+    if not isinstance(subscription, dict):
+        return False, "Subscription must be an object"
+
+    endpoint = subscription.get("endpoint", "")
+    if not isinstance(endpoint, str) or not endpoint:
+        return False, "Subscription missing 'endpoint'"
+    if len(endpoint) > _MAX_ENDPOINT_LEN:
+        return False, "Endpoint URL too long"
+    if not endpoint.startswith("https://"):
+        return False, "Endpoint must be HTTPS"
+
+    keys = subscription.get("keys")
+    if keys is not None:
+        if not isinstance(keys, dict):
+            return False, "Subscription 'keys' must be an object"
+        for key_name in ("p256dh", "auth"):
+            val = keys.get(key_name, "")
+            if val and (not isinstance(val, str) or len(val) > 512):
+                return False, f"Invalid subscription key '{key_name}'"
+
+    return True, ""
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +184,7 @@ def validate_secret():
 # ---------------------------------------------------------------------------
 
 @app.route("/health", methods=["GET"])
+@limiter.limit("60 per minute")
 def health():
     """Health check endpoint."""
     watches = db.get_active_watches()
@@ -80,6 +192,7 @@ def health():
 
 
 @app.route("/vapid-public-key", methods=["GET"])
+@limiter.limit("30 per minute")
 def vapid_public_key():
     """Return the public VAPID key so the browser can subscribe to push."""
     if not config.VAPID_PUBLIC_KEY:
@@ -92,7 +205,7 @@ def vapid_public_key():
 # ---------------------------------------------------------------------------
 
 @app.route("/chat", methods=["POST"])
-@limiter.limit("30 per minute")
+@limiter.limit("5 per 15 minutes", key_func=lambda: request.headers.get("X-Argus-Secret", request.remote_addr))
 def chat():
     """
     Proxy Claude API calls so the Anthropic key stays on the server.
@@ -110,11 +223,18 @@ def chat():
         return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 500
 
     data = request.get_json(silent=True)
-    if not data or "messages" not in data:
-        return jsonify({"error": "Missing 'messages' in request body"}), 400
+    if not data:
+        return jsonify({"error": "Invalid or missing JSON body"}), 400
 
-    messages = data.get("messages", [])
+    ok, err = validate_chat_payload(data)
+    if not ok:
+        return jsonify({"error": err}), 400
+
+    messages = data["messages"]
     watch_context = data.get("watchContext", "")
+
+    # Truncate watch context to safe length
+    watch_context = watch_context[:_MAX_CONTEXT_LEN]
 
     system_prompt = (
         "You are Argus, a friendly AI assistant that helps users monitor "
@@ -137,13 +257,16 @@ def chat():
     except anthropic.AuthenticationError:
         log.error("Anthropic API authentication failed")
         return jsonify({"error": "Claude API authentication failed"}), 500
+    except anthropic.RateLimitError:
+        log.warning("Anthropic API rate limited")
+        return jsonify({"error": "Rate limited — please try again shortly"}), 429
     except Exception as e:
         log.error("Chat endpoint error: %s", e)
         return jsonify({"error": "Chat failed"}), 500
 
 
 @app.route("/subscribe", methods=["POST"])
-@limiter.limit("20 per minute")
+@limiter.limit("5 per 15 minutes")
 def subscribe():
     """
     Store a web push subscription from the browser.
@@ -159,14 +282,20 @@ def subscribe():
 
     data = request.get_json(silent=True)
     if not data or "subscription" not in data:
-        return {"error": "Missing 'subscription' in request body"}, 400
+        return jsonify({"error": "Missing 'subscription' in request body"}), 400
 
     subscription = data["subscription"]
-    endpoint = subscription.get("endpoint")
-    if not endpoint:
-        return {"error": "Subscription missing 'endpoint'"}, 400
+    ok, err = validate_subscription_payload(subscription)
+    if not ok:
+        return jsonify({"error": err}), 400
 
+    endpoint = subscription["endpoint"]
+
+    # Validate optional watch_id
     watch_id = data.get("watch_id")
+    if watch_id is not None:
+        if not isinstance(watch_id, int) or watch_id < 0:
+            return jsonify({"error": "Invalid watch_id"}), 400
 
     sub_id = db.store_subscription(
         endpoint=endpoint,
@@ -179,7 +308,7 @@ def subscribe():
 
 
 @app.route("/register", methods=["POST"])
-@limiter.limit("10 per minute")
+@limiter.limit("5 per 15 minutes")
 def register_watch():
     """
     Register a watch from the Chrome extension or PWA.
@@ -196,25 +325,44 @@ def register_watch():
 
     data = request.get_json(silent=True)
     if not data or "route" not in data:
-        return {"error": "Missing 'route' in request body"}, 400
+        return jsonify({"error": "Missing 'route' in request body"}), 400
 
-    route = data["route"]
-    origin = route.get("origin", "").strip().upper()
-    destination = route.get("destination", "").strip().upper()
-    date = route.get("date", "").strip()
+    route = data.get("route")
+    if not isinstance(route, dict):
+        return jsonify({"error": "'route' must be an object"}), 400
 
+    # Sanitize station codes
+    origin = sanitize_station(route.get("origin", ""))
+    destination = sanitize_station(route.get("destination", ""))
     if not origin or not destination:
-        return {"error": "Route must include 'origin' and 'destination'"}, 400
+        return jsonify({"error": "Invalid station code (must be 3 uppercase letters)"}), 400
 
+    # Sanitize date
+    raw_date = route.get("date", "").strip()
+    date = sanitize_date(raw_date) if raw_date else ""
+    if raw_date and not date:
+        return jsonify({"error": "Invalid date format (use YYYY-MM-DD or MM/DD/YYYY)"}), 400
+
+    # Sanitize train numbers
     trains = data.get("trains", [])
-    train_numbers = [t.get("trainNumber", t.get("train_number", "")) for t in trains]
-    train_numbers = [t for t in train_numbers if t]  # filter empties
+    if not isinstance(trains, list):
+        return jsonify({"error": "'trains' must be an array"}), 400
+    if len(trains) > 20:
+        return jsonify({"error": "Too many trains (max 20)"}), 400
+
+    train_numbers = []
+    for t in trains:
+        if not isinstance(t, dict):
+            continue
+        raw_num = t.get("trainNumber", t.get("train_number", ""))
+        num = sanitize_train_number(str(raw_num))
+        if num:
+            train_numbers.append(num)
 
     # Check for existing active watch on same route+date
     existing = db.find_active_watch(origin, destination, date)
     if existing:
         watch_id = existing["id"]
-        # Update the watched trains
         db.update_watch_trains(watch_id, train_numbers)
         log.info("Updated existing watch #%d: %s->%s on %s, trains=%s",
                  watch_id, origin, destination, date, train_numbers)
@@ -228,14 +376,18 @@ def register_watch():
         log.info("Created new watch #%d: %s->%s on %s, trains=%s",
                  watch_id, origin, destination, date, train_numbers)
 
-    # If a push subscription was included, link it to this watch
+    # If a push subscription was included, validate and link it to this watch
     subscription = data.get("subscription")
-    if subscription and subscription.get("endpoint"):
-        db.store_subscription(
-            endpoint=subscription["endpoint"],
-            subscription_json=json.dumps(subscription),
-            watch_id=watch_id,
-        )
+    if subscription and isinstance(subscription, dict):
+        ok, err = validate_subscription_payload(subscription)
+        if ok:
+            db.store_subscription(
+                endpoint=subscription["endpoint"],
+                subscription_json=json.dumps(subscription),
+                watch_id=watch_id,
+            )
+        else:
+            log.warning("Invalid subscription in /register: %s", err)
 
     return {
         "status": "registered",
