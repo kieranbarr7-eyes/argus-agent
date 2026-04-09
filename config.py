@@ -13,7 +13,7 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ARGUS_API_SECRET = os.environ.get("ARGUS_API_SECRET", "")
 
 # ─── Flask ───────────────────────────────────────────────────────────────────
-FLASK_PORT = int(os.environ.get("FLASK_PORT", os.environ.get("PORT", 5000)))
+FLASK_PORT = int(os.environ.get("PORT", os.environ.get("FLASK_PORT", 5000)))
 
 # ─── Web Push (VAPID) ───────────────────────────────────────────────────────
 VAPID_PRIVATE_KEY    = os.environ.get("VAPID_PRIVATE_KEY")
