@@ -399,7 +399,10 @@ def _navigate(page: Page, origin: str, dest: str, date: str) -> list[dict]:
 def _filter_fare_responses(captured: list[Response]) -> list[dict]:
     """Filter captured responses down to fare-keyword JSON payloads."""
     fare_candidates: list[dict] = []
+    log.info("[Monitor] All 200 responses captured by Playwright:")
     for r in captured:
+        if r.status == 200:
+            log.info("[Monitor] URL: %s", r.url[:200])
         url_lower = r.url.lower()
         if not any(k in url_lower for k in _FARE_URL_KEYWORDS):
             continue
