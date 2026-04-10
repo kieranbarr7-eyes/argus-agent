@@ -286,6 +286,20 @@ def _navigate(page: Page, origin: str, dest: str, date: str) -> list[dict]:
             pass
 
     log.info("Captured %d fare-keyword JSON responses", len(fare_candidates))
+
+    # Diagnostic: log shape of the first captured response so we can see what
+    # Amtrak's internal API is actually returning.
+    if fare_candidates:
+        try:
+            first = fare_candidates[0]
+            log.info("[Monitor] First JSON response URL: %s", first.get("url", ""))
+            log.info(
+                "[Monitor] First JSON response sample: %s",
+                json.dumps(first["json"])[:500],
+            )
+        except Exception as e:
+            log.warning("[Monitor] Could not serialize first JSON response: %s", e)
+
     return fare_candidates
 
 
