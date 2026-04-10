@@ -72,6 +72,12 @@ def init_db() -> None:
             created_at        TEXT    NOT NULL,
             FOREIGN KEY (watch_id) REFERENCES watches(id)
         );
+
+        CREATE TABLE IF NOT EXISTS waitlist (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            email      TEXT    UNIQUE NOT NULL,
+            created_at TEXT    NOT NULL
+        );
     """)
     conn.commit()
     conn.close()
@@ -269,6 +275,23 @@ def get_price_history(watch_id: int, limit: int = 50) -> list[dict]:
     ).fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Waitlist
+# ---------------------------------------------------------------------------
+
+def add_to_waitlist(email: str) -> None:
+    """Add an email to the waitlist (idempotent — ignores duplicates)."""
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO waitlist (email, created_at) VALUES (?, datetime('now'))",
+            (email,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_latest_prices_for_watch(watch_id: int) -> list[dict]:

@@ -382,6 +382,28 @@ def register_watch():
     }, 200
 
 
+@app.route("/waitlist", methods=["POST"])
+@limiter.limit("5 per minute")
+def waitlist():
+    """Public unauthenticated waitlist signup from the landing page."""
+    data = request.get_json(silent=True) or {}
+    email = str(data.get("email", "")).strip().lower()[:254]
+    source = str(data.get("source", "landing")).strip()[:32]
+
+    # Basic email shape check — keep it lenient, the client already validated
+    if not email or "@" not in email or "." not in email.split("@")[-1]:
+        return jsonify({"error": "Invalid email"}), 400
+
+    try:
+        db.add_to_waitlist(email)
+    except Exception as exc:
+        log.error("[Argus] Waitlist insert failed: %s", exc)
+        return jsonify({"error": "Could not save signup"}), 500
+
+    log.info("[Argus] Waitlist signup: %s (source=%s)", email, source)
+    return jsonify({"success": True, "message": "Added to waitlist"}), 200
+
+
 # ---------------------------------------------------------------------------
 # Background poller
 # ---------------------------------------------------------------------------
