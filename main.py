@@ -41,27 +41,6 @@ log = logging.getLogger("argus-agent")
 
 
 # ---------------------------------------------------------------------------
-# Install Playwright browsers at startup
-# ---------------------------------------------------------------------------
-
-def install_playwright_browsers():
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"],
-            capture_output=True, text=True, timeout=300,
-        )
-        if result.returncode == 0:
-            log.info("[Argus] Playwright chromium installed successfully with deps")
-        else:
-            log.error("[Argus] Playwright install failed: %s", result.stderr)
-            log.error("[Argus] Playwright install stdout: %s", result.stdout)
-    except Exception as e:
-        log.error("[Argus] Playwright install error: %s", e)
-
-install_playwright_browsers()
-
-
-# ---------------------------------------------------------------------------
 # Flask app + CORS + rate limiting
 # ---------------------------------------------------------------------------
 

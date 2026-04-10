@@ -1,0 +1,12 @@
+[phases.setup]
+pkgs = ["python3", "gcc"]
+
+[phases.install]
+cmds = [
+  "python -m venv --copies /opt/venv",
+  ". /opt/venv/bin/activate && pip install -r requirements.txt",
+  ". /opt/venv/bin/activate && playwright install chromium --with-deps"
+]
+
+[phases.start]
+cmd = "python main.py"
