@@ -69,15 +69,6 @@ _FARE_URL_KEYWORDS = [
 # Direct REST API approach (no browser)
 # ---------------------------------------------------------------------------
 
-# Known/guessed internal Amtrak endpoints. Each is probed in order; the
-# first one that returns a JSON body we can parse into trains wins.
-_DIRECT_API_ENDPOINTS = [
-    "https://www.amtrak.com/services/journeylegsearch.json",
-    "https://www.amtrak.com/api/journey/search",
-    "https://www.amtrak.com/services/trips.json",
-]
-
-
 def fetch_trains_direct(origin: str, destination: str, date: str) -> list:
     """Try to fetch Amtrak prices directly using Chrome TLS impersonation."""
     try:
@@ -123,7 +114,7 @@ def fetch_trains_direct(origin: str, destination: str, date: str) -> list:
             if r.status_code == 200:
                 try:
                     data = r.json()
-                    trains = _recursive_find_trains(data, origin, destination)
+                    trains = _recursive_find_trains(data, depth=0)
                     if trains:
                         log.info(f'[Monitor] curl_cffi found {len(trains)} trains!')
                         return trains
