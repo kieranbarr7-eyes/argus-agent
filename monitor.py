@@ -234,17 +234,27 @@ def _configure_page(page: Page) -> None:
 
 
 def _navigate(page: Page, origin: str, dest: str, date: str) -> list[dict]:
-    """Navigate to Amtrak results page and capture API responses."""
+    """Navigate to Amtrak results page and capture API responses.
+
+    Tries the query-string URL format first (which seems more reliable for
+    triggering Angular to actually hit the fare API), then falls back to the
+    hash-fragment format if we don't see any fare responses.
+    """
     y, m, d = date.split("-")
     date_param = f"{m}/{d}/{y}"
 
-    url = (
+    url_query = (
+        "https://www.amtrak.com/buy/departure.html"
+        f"?org={origin}&dest={dest}"
+        f"&departDate={date_param}&returnDate="
+        "&adult=1&senior=0"
+    )
+    url_hash = (
         "https://www.amtrak.com/tickets/departure.html"
         f"#df={date_param}&dt=&ot=One-Way"
         f"&org={origin}&dst={dest}"
         "&fs=&ad=1&cx=0&sc=0&se=0&ck=0&vc=0"
     )
-    log.info("Navigating to: %s", url)
 
     captured: list[Response] = []
 
@@ -253,25 +263,61 @@ def _navigate(page: Page, origin: str, dest: str, date: str) -> list[dict]:
 
     page.on("response", _on_response)
 
-    try:
-        page.goto(url, wait_until="networkidle", timeout=config.PAGE_LOAD_TIMEOUT_MS)
-    except PWTimeoutError:
-        log.warning("page.goto() timed out — continuing with %d responses", len(captured))
+    def _try_url(u: str) -> None:
+        log.info("Navigating to: %s", u)
+        try:
+            page.goto(u, wait_until="networkidle", timeout=config.PAGE_LOAD_TIMEOUT_MS)
+        except PWTimeoutError:
+            log.warning("page.goto() timed out — continuing with %d responses", len(captured))
 
-    # Dismiss cookie banner
-    try:
-        btn = page.locator("#onetrust-accept-btn-handler")
-        btn.wait_for(state="visible", timeout=6_000)
-        btn.click()
-        page.wait_for_timeout(500)
-    except (PWTimeoutError, Exception):
-        pass
+        # Dismiss cookie banner
+        try:
+            btn = page.locator("#onetrust-accept-btn-handler")
+            btn.wait_for(state="visible", timeout=6_000)
+            btn.click()
+            page.wait_for_timeout(500)
+        except (PWTimeoutError, Exception):
+            pass
 
-    # Extra settle for Angular
-    page.wait_for_timeout(8_000)
+        # Extra settle for Angular bootstrap + async fare API
+        page.wait_for_timeout(15_000)
+
+    # Strategy 1: query-string URL (more reliable at triggering the API)
+    _try_url(url_query)
+
+    fare_candidates = _filter_fare_responses(captured)
+
+    # Strategy 2: fall back to hash-fragment URL if nothing came through
+    if not fare_candidates:
+        log.info("No fare responses from query-string URL — retrying with hash URL")
+        _try_url(url_hash)
+        fare_candidates = _filter_fare_responses(captured)
+
     page.remove_listener("response", _on_response)
 
-    # Parse JSON from fare-keyword URLs
+    log.info("Captured %d fare-keyword JSON responses (from %d total responses)",
+             len(fare_candidates), len(captured))
+
+    # Diagnostic: log ALL captured fare response URLs so we can see exactly
+    # what Amtrak is returning.
+    for i, r in enumerate(fare_candidates):
+        log.info("[Monitor] Response %d: %s", i + 1, r["url"])
+
+    # Also log first response body sample
+    if fare_candidates:
+        try:
+            log.info(
+                "[Monitor] First JSON response sample: %s",
+                json.dumps(fare_candidates[0]["json"])[:500],
+            )
+        except Exception as e:
+            log.warning("[Monitor] Could not serialize first JSON response: %s", e)
+
+    return fare_candidates
+
+
+def _filter_fare_responses(captured: list[Response]) -> list[dict]:
+    """Filter captured responses down to fare-keyword JSON payloads."""
     fare_candidates: list[dict] = []
     for r in captured:
         url_lower = r.url.lower()
@@ -284,22 +330,6 @@ def _navigate(page: Page, origin: str, dest: str, date: str) -> list[dict]:
             fare_candidates.append({"url": r.url, "json": data})
         except Exception:
             pass
-
-    log.info("Captured %d fare-keyword JSON responses", len(fare_candidates))
-
-    # Diagnostic: log shape of the first captured response so we can see what
-    # Amtrak's internal API is actually returning.
-    if fare_candidates:
-        try:
-            first = fare_candidates[0]
-            log.info("[Monitor] First JSON response URL: %s", first.get("url", ""))
-            log.info(
-                "[Monitor] First JSON response sample: %s",
-                json.dumps(first["json"])[:500],
-            )
-        except Exception as e:
-            log.warning("[Monitor] Could not serialize first JSON response: %s", e)
-
     return fare_candidates
 
 

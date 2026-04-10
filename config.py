@@ -26,7 +26,7 @@ POLL_JITTER_SECONDS   = 15   # ± random jitter added to each poll
 
 # ─── Playwright ──────────────────────────────────────────────────────────────
 HEADLESS              = True
-PAGE_LOAD_TIMEOUT_MS  = 60_000
+PAGE_LOAD_TIMEOUT_MS  = 90_000
 DEBUG_SCREENSHOT_DIR  = "debug_screenshots"
 
 # ─── Database ────────────────────────────────────────────────────────────────
