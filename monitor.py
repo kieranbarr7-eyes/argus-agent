@@ -13,6 +13,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import requests
+
 from playwright.sync_api import (
     Browser,
     Page,
@@ -64,6 +66,92 @@ _FARE_URL_KEYWORDS = [
 
 
 # ---------------------------------------------------------------------------
+# Direct REST API approach (no browser)
+# ---------------------------------------------------------------------------
+
+# Known/guessed internal Amtrak endpoints. Each is probed in order; the
+# first one that returns a JSON body we can parse into trains wins.
+_DIRECT_API_ENDPOINTS = [
+    "https://www.amtrak.com/services/journeylegsearch.json",
+    "https://www.amtrak.com/api/journey/search",
+    "https://www.amtrak.com/services/trips.json",
+]
+
+
+def fetch_trains_direct(origin: str, destination: str, date: str) -> list[dict]:
+    """
+    Try to fetch fare data by hitting Amtrak's internal REST API directly,
+    bypassing the browser entirely.
+
+    Logs the status code and first 500 chars of response body for every
+    endpoint probed so we can see which (if any) actually return data.
+
+    Returns a list of train dicts (same shape as _parse_all_trains_from_json)
+    or an empty list if no endpoint returned usable data.
+    """
+    # Amtrak's API seems to accept MM/DD/YYYY in the departDate param
+    y, m, d = date.split("-")
+    date_mmddyyyy = f"{m}/{d}/{y}"
+
+    headers = {
+        "User-Agent": _DESKTOP_UA,
+        "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.amtrak.com/tickets/departure.html",
+        "X-Requested-With": "XMLHttpRequest",
+    }
+
+    params = {
+        "org": origin,
+        "dest": destination,
+        "departDate": date_mmddyyyy,
+        "returnDate": "",
+        "adult": "1",
+        "senior": "0",
+        "child": "0",
+        "infant": "0",
+    }
+
+    for endpoint in _DIRECT_API_ENDPOINTS:
+        try:
+            resp = requests.get(endpoint, headers=headers, params=params, timeout=30)
+        except Exception as exc:
+            log.warning("[Monitor] Direct API %s raised: %s", endpoint, exc)
+            continue
+
+        body_sample = (resp.text or "")[:500]
+        log.info("[Monitor] Direct API %s status: %s", endpoint, resp.status_code)
+        log.info("[Monitor] Direct API %s response: %s", endpoint, body_sample)
+
+        if resp.status_code != 200:
+            continue
+
+        try:
+            data = resp.json()
+        except Exception:
+            log.info("[Monitor] Direct API %s: response not JSON", endpoint)
+            continue
+
+        trains = _recursive_find_trains(data, depth=0)
+        if trains:
+            log.info(
+                "[Monitor] Direct API %s yielded %d trains",
+                endpoint, len(trains),
+            )
+            # Deduplicate by (train_number, departure_time)
+            seen = set()
+            unique: list[dict] = []
+            for t in trains:
+                key = (t["train_number"], t.get("departure_time", ""))
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(t)
+            return unique
+
+    return []
+
+
+# ---------------------------------------------------------------------------
 # Public: fetch all trains for a route
 # ---------------------------------------------------------------------------
 
@@ -80,6 +168,20 @@ def fetch_all_trains(
           "price": 68.0, "fare_class": "coach"}, ...]
     """
     log.info("Fetching trains for %s->%s on %s", origin, destination, date)
+
+    # Strategy 0: Try hitting Amtrak's internal REST API directly. Much
+    # faster and more reliable than spinning up a full Chromium instance
+    # if any of the probed endpoints actually returns fare data.
+    try:
+        direct_trains = fetch_trains_direct(origin, destination, date)
+        if direct_trains:
+            log.info(
+                "Direct API returned %d trains — skipping Playwright",
+                len(direct_trains),
+            )
+            return direct_trains
+    except Exception as exc:
+        log.warning("Direct API attempt failed: %s", exc)
 
     stealth = Stealth(
         chrome_runtime=True,
