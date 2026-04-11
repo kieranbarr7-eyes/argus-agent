@@ -404,6 +404,22 @@ def waitlist():
     return jsonify({"success": True, "message": "Added to waitlist"}), 200
 
 
+@app.route("/admin/dump-waitlist", methods=["GET"])
+def dump_waitlist():
+    """Temporary: simple flat list of waitlist emails."""
+    secret = request.args.get("secret", "")
+    if not hmac.compare_digest(secret, config.ARGUS_API_SECRET or ""):
+        return jsonify({"error": "Unauthorized"}), 401
+    conn = db._connect()
+    try:
+        rows = conn.execute(
+            "SELECT email, created_at FROM waitlist ORDER BY created_at DESC"
+        ).fetchall()
+    finally:
+        conn.close()
+    return jsonify({"count": len(rows), "emails": [r[0] for r in rows]})
+
+
 @app.route("/admin/waitlist", methods=["GET"])
 def admin_waitlist():
     """Admin-only: list all waitlist signups. Requires ?secret=ARGUS_API_SECRET."""
