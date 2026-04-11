@@ -30,4 +30,7 @@ PAGE_LOAD_TIMEOUT_MS  = 90_000
 DEBUG_SCREENSHOT_DIR  = "debug_screenshots"
 
 # ─── Database ────────────────────────────────────────────────────────────────
-DB_PATH = "argus_agent.db"
+# DATABASE_URL takes precedence (PostgreSQL in production).
+# Falls back to SQLite via DB_PATH for local development.
+DATABASE_URL = os.environ.get("DATABASE_URL")
+DB_PATH = os.environ.get("DB_PATH", "argus_agent.db")
