@@ -170,8 +170,10 @@ def fetch_all_trains(
     )
 
     with stealth.use_sync(sync_playwright()) as pw:
-        browser = _launch(pw)
+        browser = None
+        page = None
         try:
+            browser = _launch(pw)
             page = browser.new_page()
             _configure_page(page)
             stealth.apply_stealth_sync(page)
@@ -183,11 +185,19 @@ def fetch_all_trains(
             log.info("Found %d trains for %s->%s on %s", len(trains), origin, destination, date)
             return trains
         except Exception as exc:
-            _save_debug(page, "monitor_error")
+            if page is not None:
+                try:
+                    _save_debug(page, "monitor_error")
+                except Exception:
+                    pass
             log.error("Scrape failed: %s", exc)
             return []
         finally:
-            browser.close()
+            if browser is not None:
+                try:
+                    browser.close()
+                except Exception as close_exc:
+                    log.warning("Browser close failed: %s", close_exc)
 
 
 def filter_by_time_window(

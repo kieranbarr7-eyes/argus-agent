@@ -564,11 +564,18 @@ def main() -> None:
     log.info("  GET  /vapid-public-key — get VAPID public key")
     log.info("  GET  /health           — health check")
 
+    # threaded=False keeps Flask on a single request thread so we don't
+    # compete with Playwright/APScheduler for OS threads. Railway
+    # containers have a low thread ceiling and Playwright spawns many
+    # threads per browser launch, which was causing
+    # "RuntimeError: can't start new thread".
     app.run(
         host="0.0.0.0",
         port=config.FLASK_PORT,
         debug=False,
         use_reloader=False,  # Reloader conflicts with APScheduler
+        threaded=False,
+        processes=1,
     )
 
 
