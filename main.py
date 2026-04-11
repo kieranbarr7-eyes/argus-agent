@@ -413,15 +413,24 @@ def admin_waitlist():
 
     conn = db._connect()
     try:
-        rows = conn.execute(
-            "SELECT email, created_at FROM waitlist ORDER BY created_at DESC"
-        ).fetchall()
+        if db._USE_POSTGRES:
+            import psycopg2.extras
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT email, created_at FROM waitlist ORDER BY created_at DESC"
+                )
+                rows = [dict(r) for r in cur.fetchall()]
+        else:
+            raw = conn.execute(
+                "SELECT email, created_at FROM waitlist ORDER BY created_at DESC"
+            ).fetchall()
+            rows = [{"email": r[0], "created_at": r[1]} for r in raw]
     finally:
         conn.close()
 
     return jsonify({
         "count": len(rows),
-        "emails": [{"email": r[0], "signed_up": r[1]} for r in rows],
+        "emails": [{"email": r["email"], "signed_up": r["created_at"]} for r in rows],
     })
 
 
