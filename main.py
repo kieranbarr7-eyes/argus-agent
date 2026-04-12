@@ -22,7 +22,6 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-from limits.storage import MemoryStorage
 from apscheduler.schedulers.background import BackgroundScheduler
 
 import config
@@ -56,22 +55,11 @@ CORS(app, origins=[
     "https://argus-pwa-pied.vercel.app",
 ])
 
-# MemoryStorage normally spawns a timer thread to purge expired entries.
-# That thread cannot be started when Flask runs with threaded=False, which
-# causes "RuntimeError: can't start new thread".  We subclass MemoryStorage
-# and override the name-mangled __schedule_expiry method to be a no-op so
-# the storage works correctly in a single-threaded process.  Expired entries
-# are still checked on every hit — they just aren't proactively swept.
-class _NoThreadMemoryStorage(MemoryStorage):
-    def _MemoryStorage__schedule_expiry(self):  # noqa: N802  (name-mangled override)
-        pass
-
-
 limiter = Limiter(
     app=app,
     key_func=get_remote_address,
+    storage_uri="memory://",
     default_limits=["200 per hour", "50 per minute"],
-    storage=_NoThreadMemoryStorage(),
 )
 
 
@@ -601,18 +589,12 @@ def main() -> None:
     log.info("  GET  /vapid-public-key — get VAPID public key")
     log.info("  GET  /health           — health check")
 
-    # threaded=False keeps Flask on a single request thread so we don't
-    # compete with Playwright/APScheduler for OS threads. Railway
-    # containers have a low thread ceiling and Playwright spawns many
-    # threads per browser launch, which was causing
-    # "RuntimeError: can't start new thread".
     app.run(
         host="0.0.0.0",
         port=config.FLASK_PORT,
         debug=False,
         use_reloader=False,  # Reloader conflicts with APScheduler
-        threaded=False,
-        processes=1,
+        threaded=True,
     )
 
 
