@@ -239,7 +239,7 @@ def chat():
             return jsonify({"error": "API key not configured"}), 500
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-haiku-4-5-20251001",
             max_tokens=300,
             system=f"You are Argus, a friendly AI assistant that helps users monitor Amtrak ticket prices. {watch_context}",
             messages=messages,

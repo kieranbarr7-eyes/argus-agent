@@ -17,6 +17,7 @@ waitlist           — early-access email signups
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -44,10 +45,29 @@ else:
 # ---------------------------------------------------------------------------
 
 def _connect():
-    """Return an open database connection for the configured backend."""
+    """Return an open database connection for the configured backend.
+
+    For PostgreSQL, retries up to 3 times with TCP keepalives enabled
+    to survive Railway idle periods and transient connection drops.
+    """
     if _USE_POSTGRES:
-        conn = psycopg2.connect(config.DATABASE_URL)
-        return conn
+        for attempt in range(3):
+            try:
+                conn = psycopg2.connect(
+                    config.DATABASE_URL,
+                    connect_timeout=10,
+                    keepalives=1,
+                    keepalives_idle=30,
+                    keepalives_interval=10,
+                    keepalives_count=5,
+                )
+                return conn
+            except psycopg2.OperationalError:
+                if attempt < 2:
+                    log.warning("db: PostgreSQL connect attempt %d failed, retrying…", attempt + 1)
+                    time.sleep(1)
+                else:
+                    raise
     else:
         conn = sqlite3.connect(config.DB_PATH)
         conn.row_factory = sqlite3.Row
