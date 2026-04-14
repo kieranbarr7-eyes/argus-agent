@@ -189,9 +189,8 @@ def validate_subscription_payload(subscription: dict) -> tuple[bool, str]:
 @app.route("/health", methods=["GET"])
 @limiter.limit("60 per minute")
 def health():
-    """Health check endpoint."""
-    watches = db.get_active_watches()
-    return {"status": "ok", "active_watches": len(watches)}, 200
+    """Health check endpoint — must be lightweight, no DB dependency."""
+    return {"status": "ok"}, 200
 
 
 @app.route("/vapid-public-key", methods=["GET"])
@@ -513,11 +512,25 @@ def poll_all_watches() -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    # Initialize database
-    db.init_db()
+    # Initialize database — retry on cold start when DB may be waking up
+    for attempt in range(5):
+        try:
+            db.init_db()
+            break
+        except Exception as exc:
+            if attempt < 4:
+                log.warning("DB init attempt %d failed (%s), retrying in 2s…", attempt + 1, exc)
+                time.sleep(2)
+            else:
+                log.error("DB init failed after 5 attempts: %s", exc)
+                raise
 
     # Log active watches on startup
-    watches = db.get_active_watches()
+    try:
+        watches = db.get_active_watches()
+    except Exception:
+        log.warning("Could not load watches on startup — DB may still be warming up")
+        watches = []
     log.info("=" * 60)
     log.info("ARGUS AGENT")
     log.info("=" * 60)
